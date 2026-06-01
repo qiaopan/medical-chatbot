@@ -1,0 +1,47 @@
+{
+  "input_type": "plain_text",
+  "text_id": "manual_input",
+  "original_text": "Can a 50-year-old still receive Tdap if they missed the 45-year vaccination?",
+  "AIClassification": {
+    "model": "gpt-4o-mini",
+    "api_version": "2024-10-21",
+    "generated_at_utc": "2026-05-30T05:35:39.693110+00:00",
+    "classification": {
+      "extracted_question": "Can a 50-year-old still receive Tdap if they missed the 45-year vaccination?",
+      "main_category": "Catch-up",
+      "secondary_category": "Missed dose",
+      "vaccine_or_disease": [
+        "Tdap"
+      ],
+      "medicine_or_treatment": [
+        "Unknown"
+      ],
+      "target_population": [
+        "Adult"
+      ],
+      "caller_type": "Unknown",
+      "clinical_scenario": [
+        "Other / Unclear"
+      ],
+      "age_or_life_stage": [
+        "50 years"
+      ],
+      "risk_level": "Low",
+      "source_needed": [
+        "Handbook",
+        "IMAC website"
+      ],
+      "handbook_search_terms": [
+        "Tdap",
+        "Catch-up",
+        "Adult",
+        "missed dose"
+      ],
+      "needs_rag": true,
+      "confidence": "High",
+      "evidence_from_transcript": [
+        "Can a 50-year-old still receive Tdap if they missed the 45-year vaccination?"
+      ]
+    }
+  }
+}
