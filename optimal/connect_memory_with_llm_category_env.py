@@ -7,7 +7,7 @@ from typing import Any, Dict, List, Tuple
 
 from dotenv import load_dotenv
 from langchain_core.documents import Document
-from langchain_openai import AzureChatOpenAI
+from langchain_groq import ChatGroq
 from langchain_community.vectorstores import FAISS
 from langchain_huggingface import HuggingFaceEmbeddings
 
@@ -15,8 +15,8 @@ load_dotenv()
 
 DB_FAISS_PATH = "vectorstore/db_faiss"
 EMBEDDING_MODEL_NAME = "sentence-transformers/all-MiniLM-L6-v2"
-AZURE_DEPLOYMENT_NAME = os.environ.get("AZURE_OPENAI_DEPLOYMENT", "gpt-4o-mini-medical-chatbot")
-AZURE_OPENAI_API_VERSION = os.environ.get("AZURE_OPENAI_API_VERSION", "2024-10-21")
+GROQ_MODEL = os.environ.get("GROQ_MODEL", "openai/gpt-oss-20b")
+GROQ_REQUEST_TIMEOUT = float(os.environ.get("GROQ_REQUEST_TIMEOUT", "30"))
 
 
 def _import_classifier_module():
@@ -58,26 +58,25 @@ def _import_classifier_module():
     )
 
 def get_llm(temperature: float = 0.0, max_tokens: int = 900):
-    azure_endpoint = os.environ.get("AZURE_OPENAI_ENDPOINT")
-    azure_api_key = os.environ.get("AZURE_OPENAI_API_KEY")
+    groq_api_key = os.environ.get("GROQ_API_KEY")
+    if not groq_api_key:
+        raise ValueError("Missing GROQ_API_KEY in .env or environment variables")
 
-    if not azure_endpoint:
-        raise ValueError("Missing AZURE_OPENAI_ENDPOINT in .env or environment variables")
-    if not azure_api_key:
-        raise ValueError("Missing AZURE_OPENAI_API_KEY in .env or environment variables")
-
-    return AzureChatOpenAI(
-        azure_endpoint=azure_endpoint,
-        api_key=azure_api_key,
-        azure_deployment=AZURE_DEPLOYMENT_NAME,
-        api_version=AZURE_OPENAI_API_VERSION,
+    return ChatGroq(
+        api_key=groq_api_key,
+        model=GROQ_MODEL,
         temperature=temperature,
         max_tokens=max_tokens,
+        timeout=GROQ_REQUEST_TIMEOUT,
+        max_retries=2,
     )
 
 
 def get_embedding_model():
-    return HuggingFaceEmbeddings(model_name=EMBEDDING_MODEL_NAME)
+    return HuggingFaceEmbeddings(
+        model_name=EMBEDDING_MODEL_NAME,
+        model_kwargs={"local_files_only": True},
+    )
 
 
 def load_vectorstore():
@@ -109,7 +108,7 @@ def classify_and_anonymize_user_query(user_query: str) -> Tuple[str, Dict[str, A
         redacted_query, redactions = user_query, []
 
     try:
-        client = classifier.create_azure_client()
+        client = classifier.create_groq_client()
         classification = classifier.classify_text_with_mini(redacted_query, client)
     except Exception as exc:
         classification = {

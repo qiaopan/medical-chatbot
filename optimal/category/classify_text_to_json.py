@@ -3,17 +3,13 @@ classify_text_to_json.py
 
 Purpose:
 - Input plain text immunisation question or transcript.
-- Use Azure OpenAI gpt-4o-mini to classify the immunisation query.
+- Use Groq to classify the immunisation query.
 - Output a JSON file containing:
   1. the original input text
   2. the AI classification result
 
-Expected category/.env in the same folder as this script:
-
-CLASSIFIER_AZURE_OPENAI_ENDPOINT=https://YOUR-RESOURCE.openai.azure.com/
-CLASSIFIER_AZURE_OPENAI_API_KEY=YOUR-API-KEY
-CLASSIFIER_AZURE_OPENAI_DEPLOYMENT=gpt-4o-mini-medical-chatbot
-CLASSIFIER_AZURE_OPENAI_API_VERSION=2024-10-21
+Expected GROQ_API_KEY in the root .env or process environment.
+GROQ_CLASSIFIER_MODEL optionally overrides the default model.
 
 Example usage:
 
@@ -32,11 +28,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List
 
-from openai import AzureOpenAI
+from groq import Groq
 
 
 # ============================================================
-# category/.env loading for the classification agent only
+# Environment loading
 # ============================================================
 
 SCRIPT_DIR = Path(__file__).resolve().parent
@@ -44,10 +40,7 @@ SCRIPT_DIR = Path(__file__).resolve().parent
 
 def load_env_file(env_path: Path) -> None:
     """
-    Minimal .env loader for category/.env.
-
-    This script intentionally uses CLASSIFIER_* variable names so it will not
-    conflict with the root project .env used by the RAG answer model.
+    Minimal .env loader that does not overwrite explicit shell variables.
     """
     if not env_path.exists():
         return
@@ -73,26 +66,19 @@ def require_env(name: str) -> str:
     if not value:
         raise RuntimeError(
             f"Missing environment variable: {name}. "
-            f"Please set it in category/.env next to classify_text_to_json.py."
+            f"Please set it in the project root .env or process environment."
         )
     return value
 
 
+load_env_file(SCRIPT_DIR.parent.parent / ".env")
 load_env_file(SCRIPT_DIR / ".env")
 
-# Internal variable names are kept as AZURE_OPENAI_* to minimise changes to the
-# original classification logic. They are populated from CLASSIFIER_* env vars.
-AZURE_OPENAI_ENDPOINT = require_env("CLASSIFIER_AZURE_OPENAI_ENDPOINT")
-AZURE_OPENAI_API_KEY = require_env("CLASSIFIER_AZURE_OPENAI_API_KEY")
-AZURE_OPENAI_DEPLOYMENT = require_env("CLASSIFIER_AZURE_OPENAI_DEPLOYMENT")
-AZURE_OPENAI_API_VERSION = os.getenv("CLASSIFIER_AZURE_OPENAI_API_VERSION", "2024-10-21").strip()
-
-if "/openai/deployments/" in AZURE_OPENAI_ENDPOINT:
-    raise RuntimeError(
-        "CLASSIFIER_AZURE_OPENAI_ENDPOINT should be the Azure resource root URL, "
-        "for example https://ai-team-09-hack.cognitiveservices.azure.com/ . "
-        "Do not use the full /openai/deployments/.../chat/completions URL."
-    )
+GROQ_MODEL = os.getenv(
+    "GROQ_CLASSIFIER_MODEL",
+    os.getenv("GROQ_MODEL", "openai/gpt-oss-20b"),
+).strip()
+GROQ_REQUEST_TIMEOUT = float(os.getenv("GROQ_REQUEST_TIMEOUT", "30"))
 
 
 MAIN_CATEGORIES = [
@@ -453,11 +439,11 @@ Now classify the input text.
 """
 
 
-def create_azure_client() -> AzureOpenAI:
-    return AzureOpenAI(
-        azure_endpoint=AZURE_OPENAI_ENDPOINT,
-        api_key=AZURE_OPENAI_API_KEY,
-        api_version=AZURE_OPENAI_API_VERSION,
+def create_groq_client() -> Groq:
+    return Groq(
+        api_key=require_env("GROQ_API_KEY"),
+        timeout=GROQ_REQUEST_TIMEOUT,
+        max_retries=2,
     )
 
 
@@ -575,9 +561,9 @@ def normalize_classification(raw: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
-def classify_text_with_mini(input_text: str, client: AzureOpenAI) -> Dict[str, Any]:
+def classify_text_with_mini(input_text: str, client: Groq) -> Dict[str, Any]:
     response = client.chat.completions.create(
-        model=AZURE_OPENAI_DEPLOYMENT,
+        model=GROQ_MODEL,
         temperature=0,
         response_format={"type": "json_object"},
         messages=[
@@ -601,8 +587,8 @@ def build_output_json(
         "text_id": text_id,
         "original_text": original_text,
         "AIClassification": {
-            "model": AZURE_OPENAI_DEPLOYMENT,
-            "api_version": AZURE_OPENAI_API_VERSION,
+            "provider": "Groq",
+            "model": GROQ_MODEL,
             "generated_at_utc": datetime.now(timezone.utc).isoformat(),
             "classification": classification,
         },
@@ -650,11 +636,11 @@ def main() -> None:
         raise ValueError("Input text is empty.")
 
     print("Running mode: plain text classification")
-    print(f"Azure OpenAI classifier deployment: {AZURE_OPENAI_DEPLOYMENT}")
+    print(f"Groq classifier model: {GROQ_MODEL}")
 
     redacted_text, redactions = anonymize_text(original_text)
 
-    client = create_azure_client()
+    client = create_groq_client()
     classification = classify_text_with_mini(redacted_text, client)
     classification["pii_redaction"] = {
         "enabled": True,
