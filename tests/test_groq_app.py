@@ -67,8 +67,79 @@ class FrontendTests(unittest.TestCase):
         app_path = Path(__file__).parents[1] / "optimal" / "medibot_category_env.py"
         app = AppTest.from_file(str(app_path)).run(timeout=20)
         self.assertEqual(len(app.exception), 0)
-        self.assertEqual(app.title[0].value, "Ask Chatbot!")
+        self.assertEqual(
+            app.title[0].value,
+            "Agentic Medical RAG — Controlled Healthcare Assistant",
+        )
         self.assertEqual(len(app.chat_input), 1)
+
+    def test_streamlit_high_risk_flow_renders_trace(self):
+        app_path = Path(__file__).parents[1] / "optimal" / "medibot_category_env.py"
+        app = AppTest.from_file(str(app_path)).run(timeout=20)
+        app.chat_input[0].set_value(
+            "I have severe chest pain. What medicine should I take?"
+        ).run(timeout=20)
+        self.assertEqual(len(app.exception), 0)
+        rendered_markdown = "\n".join(item.value for item in app.markdown)
+        self.assertIn("escalate_high_risk_request", rendered_markdown)
+        self.assertIn("This may be a medical emergency", rendered_markdown)
+
+
+class AgentOrchestrationTests(unittest.TestCase):
+    def test_normal_question_selects_medical_knowledge_tool(self):
+        from optimal import medibot_category_env as app
+
+        def fake_search(redacted_query, classification, trace, **kwargs):
+            return {
+                "answer": "Grounded [1]",
+                "sources": [{"title": "[1] Handbook"}],
+                "classification": classification,
+                "rewritten_query": "Tdap adult catch-up vaccination",
+                "retrieval_count": 4,
+                "trace": [event.to_dict() for event in trace],
+            }
+
+        with (
+            patch.object(app, "anonymize_user_query", return_value=(object(), "Can a 50-year-old still receive Tdap?", [])),
+            patch.object(app, "classify_redacted_query", return_value={"risk_level": "Low"}),
+            patch.object(app, "search_medical_knowledge", side_effect=fake_search),
+        ):
+            result = app.run_agentic_request("Can a 50-year-old still receive Tdap?")
+
+        self.assertEqual(result["decision"]["action"], "search_medical_knowledge")
+        self.assertEqual(result["decision"]["risk"], "normal")
+        self.assertTrue(result["sources"])
+
+    def test_high_risk_question_skips_classifier_and_rag(self):
+        from optimal import medibot_category_env as app
+
+        with (
+            patch.object(app, "anonymize_user_query", return_value=(object(), "I have severe chest pain. What medicine should I take?", [])),
+            patch.object(app, "classify_redacted_query") as classify,
+            patch.object(app, "search_medical_knowledge") as search,
+        ):
+            result = app.run_agentic_request(
+                "I have severe chest pain. What medicine should I take?"
+            )
+
+        classify.assert_not_called()
+        search.assert_not_called()
+        self.assertEqual(result["decision"]["action"], "escalate_high_risk_request")
+        self.assertEqual(result["decision"]["risk"], "high")
+        self.assertEqual(result["retrieval_count"], 0)
+        steps = [event["step"] for event in result["trace"]]
+        self.assertIn("Normal RAG generation skipped", steps)
+        self.assertEqual(steps[-1], "Request completed")
+
+    def test_stroke_and_breathing_rules_are_deterministic(self):
+        from optimal.agent_orchestrator import route_request
+
+        for question in (
+            "My face is drooping and I have sudden slurred speech",
+            "I cannot breathe and I am gasping for air",
+        ):
+            with self.subTest(question=question):
+                self.assertFalse(route_request(question).allow_rag)
 
 
 class LiveGroqTests(unittest.TestCase):
