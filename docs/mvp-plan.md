@@ -1,6 +1,12 @@
 # Agentic Medical RAG Interview MVP — Smallest Plan
 
-This plan is based on the Stage 1 repository inspection. It preserves the existing LangChain, MiniLM, FAISS/MMR, Azure OpenAI, citation, and Streamlit design. No agent framework or multi-agent system is proposed.
+This plan is based on the repository inspection and the verified 2026-08-13 Groq migration. It preserves the existing LangChain, MiniLM, FAISS/MMR, Groq, citation, and Streamlit design. No agent framework or multi-agent system is proposed.
+
+## Integration decision and diagram deviation
+
+The implementation uses plain Python orchestration. LangGraph would add state-machine dependencies and concepts without solving a problem that two deterministic branches and an in-memory trace cannot solve more clearly.
+
+The target diagram places the router before intent/risk classification. In this implementation, local PII masking runs first, followed immediately by deterministic emergency detection. Only a normal request proceeds to remote Groq classification. This deliberate deviation means an obvious emergency does not need an LLM decision and does not reach query rewriting, retrieval, or autonomous answer generation. The normal path retains Groq classification as a retrieval aid.
 
 ## Scope guardrails
 
@@ -14,20 +20,20 @@ This plan is based on the Stage 1 repository inspection. It preserves the existi
 
 ## Stage 2 — Compatibility only
 
-Goal: prove the existing non-agent RAG application can run on this Intel Mac.
+Goal: prove the existing non-agent RAG application can run on the Apple Silicon Mac.
 
-1. Use the existing `chatbot` Conda environment and Python 3.11.13.
-2. Resolve direct runtime packages with Intel-compatible versions. Validate wheel availability for FAISS and Torch before installing the frozen requirements; avoid installing unrelated heavy transitive tooling.
+1. Use the repository-local native arm64 `.venv` with Python 3.11.
+2. Use the verified arm64 wheels for FAISS, Torch, and the frozen scientific stack.
 3. Confirm or cache `sentence-transformers/all-MiniLM-L6-v2` and load the committed FAISS index with the same embedding model.
-4. Configure the existing Azure provider through ignored environment variables, never committed secrets.
+4. Configure Groq through the ignored root `.env`, never committed secrets.
 5. Make only necessary reliability fixes:
    - lazy classifier configuration/import behaviour;
-   - explicit Azure request timeouts and readable errors;
+   - explicit Groq request timeouts and readable errors;
    - repository-root-safe data/index paths;
    - correct stale index-build filename in the UI.
 6. Run one handbook-supported question through retrieval, answer generation, and citations in the terminal entry point, then launch Streamlit and repeat it.
 
-Compatibility decision point: if the exact local embedding stack is impossible on macOS Intel, document the observed installation error and propose the smallest adapter/fallback before changing retrieval semantics. Do not rebuild the index as an incidental fix.
+Compatibility is verified. Runtime query embeddings now use the local MiniLM cache, and the committed index loads without changing retrieval semantics.
 
 ## Stage 3 — Minimal agentic vertical slice
 
@@ -48,7 +54,7 @@ Implement a small function that returns an explicit decision object containing a
 - selected action;
 - whether routine RAG answering is allowed.
 
-Use deterministic phrase/rule checks for clear emergencies such as severe chest pain, stroke signs, and severe breathing difficulty. Combine these with the existing classifier risk/category when available. Deterministic emergency checks must run even if Azure classification fails.
+Use deterministic phrase/rule checks for clear emergencies such as severe chest pain, stroke signs, and severe breathing difficulty. Combine these with the existing classifier risk/category when available. Deterministic emergency checks must run before and independently of Groq classification.
 
 ### 3. Add exactly two controlled tools/actions
 
@@ -112,10 +118,10 @@ Add focused tests using lightweight fakes so routing and trace tests require nei
 Then perform real local smoke checks:
 
 - run the focused test command;
-- run one terminal RAG request with configured Azure access;
+- run one terminal RAG request with configured Groq access;
 - launch Streamlit with one documented command;
 - submit both demo prompts in the browser and verify answer, sources, selected action, risk, and trace;
-- verify failure is prompt and readable when Azure access is unavailable.
+- verify failure is prompt and readable when Groq access is unavailable.
 
 Do not claim end-to-end success unless the browser flow has actually been launched and exercised.
 
@@ -156,13 +162,13 @@ Exact filenames should be chosen after Stage 2 proves the runnable environment, 
 - small edits to the existing Streamlit entry point;
 - focused tests;
 - one concise demo document;
-- minimal dependency/configuration corrections required by observed Intel/Python failures.
+- minimal dependency/configuration corrections already required by the Apple Silicon/Python migration.
 
 Avoid changing the index builder or rebuilding the FAISS store unless verification shows the normal demo prompt is unsupported. JSONL support is useful but is not required for the smallest Handbook-backed vertical slice.
 
 ## Approval gates
 
 - After this Stage 1 report: wait for approval before compatibility changes.
-- After any proven Intel embedding/FAISS blocker: explain the concrete failure and fallback trade-off before changing models or retrieval semantics.
+- Before changing models or retrieval semantics: explain the concrete failure and fallback trade-off.
 - After Stage 2: confirm the existing RAG works before adding routing.
 - After Definition of Done: stop adding features.

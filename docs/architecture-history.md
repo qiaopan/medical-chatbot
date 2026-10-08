@@ -13,22 +13,24 @@ User question (Streamlit or terminal)
 Local regex PII masking
         |
         v
-Groq structured query classification
+Deterministic router / emergency rules
+        |
+        +-----------------------------+
+        |                             |
+        v                             v
+Groq classification          Controlled escalation
+        |                     (normal RAG skipped)
+        v
+Query enrichment + rewrite
         |
         v
-Classification-enhanced query + Groq query rewrite
+MiniLM -> FAISS MMR -> evidence
         |
         v
-MiniLM query embedding
-        |
-        v
-FAISS MMR retrieval (k=6, fetch_k=20, lambda=0.5)
-        |
-        v
-Groq evidence-only answer generation
-        |
-        v
-Answer + Handbook page/section citations
+Grounded Groq answer + citations
+        +-------------+---------------+
+                      v
+                Agent Trace
 ```
 
 ### Runtime components
@@ -47,19 +49,23 @@ Answer + Handbook page/section citations
 | Configuration | Ignored root `.env`; `GROQ_API_KEY` is required |
 | Runtime | Native Apple Silicon Python 3.11 environment in ignored `.venv/` |
 | Automated checks | `unittest`, Streamlit `AppTest`, optional live Groq test, HTTP healthcheck |
+| Orchestration | Typed plain-Python router in `optimal/agent_orchestrator.py` |
+| Controlled actions | `search_medical_knowledge`, `escalate_high_risk_request` |
+| Trace | In-memory JSON-friendly ordered events stored with Streamlit chat state |
 
 ### Current request lifecycle
 
 1. The UI receives the user's question.
 2. The classifier module masks prototype PII patterns locally.
-3. Groq returns structured immunisation classification labels.
-4. The labels enrich the retrieval query; Groq rewrites it for search.
-5. MiniLM embeds the query from its local cache.
-6. FAISS performs MMR retrieval and returns six diverse chunks.
-7. Groq produces an answer constrained to the retrieved context.
-8. The UI displays the answer, citations/source excerpts, and classification labels.
+3. Deterministic rules check for obvious emergencies before any remote model call.
+4. A high-risk request selects `escalate_high_risk_request`, skips ordinary RAG, and returns a controlled response.
+5. A normal request proceeds to Groq structured classification and selects `search_medical_knowledge`.
+6. Classification labels enrich the query; Groq rewrites it for search.
+7. MiniLM embeds the query and FAISS performs MMR selection from 20 candidates to six chunks.
+8. Groq produces an answer constrained to retrieved evidence.
+9. The UI displays answer, sources, risk, selected action, rewritten query, classification, and trace.
 
-The UI and terminal entry points currently duplicate parts of this orchestration. A shared service extraction is planned but has not yet been implemented.
+The terminal entry point still uses the direct RAG flow. The interview UI is the canonical agentic path.
 
 ## Change log
 
@@ -140,7 +146,13 @@ The current baseline was already more capable than the repository's first simple
 
 An intermediate revision used Azure OpenAI for classification, rewriting, and answer generation. Before that, the original Streamlit prototype used `ChatGroq` with a basic `RetrievalQA` chain and top-k similarity retrieval. The 2026-08-13 Groq migration keeps the newer retrieval and citation improvements instead of reverting to that older architecture.
 
-## Planned next architecture stage — not yet implemented
+## Current upgrade integration decision — 2026-08-13
+
+The agentic upgrade uses plain Python orchestration rather than an agent framework. The workflow has only two controlled actions and one deterministic branch, so a framework would add implementation cost without improving interview clarity or reliability.
+
+There is one deliberate deviation from the conceptual target diagram: local PII masking and deterministic emergency detection run before remote Groq intent classification. This ensures an obvious emergency can be escalated even when Groq is unavailable and prevents that request from entering query rewriting, FAISS retrieval, or autonomous answer generation. Normal medical-information requests continue through Groq classification because those labels improve retrieval focus.
+
+## Agentic architecture implementation scope
 
 The requirements in `AGENTS.md` and the implementation plan in `docs/mvp-plan.md` describe a lightweight controlled agent layer:
 
@@ -157,17 +169,32 @@ Observe -> PII process -> Decide risk/action
                          visible agent trace
 ```
 
-Planned work:
+Implemented work:
 
-- extract one shared RAG service from the duplicated UI/terminal logic;
-- add deterministic emergency/risk routing;
-- expose exactly two controlled actions;
-- prevent routine autonomous treatment generation for clear high-risk requests;
-- record an in-memory request trace;
-- show selected action, risk, sources, and trace in Streamlit;
-- add focused normal-route and high-risk-route tests.
+- added deterministic emergency/risk routing in a typed shared module;
+- exposed exactly two controlled actions;
+- prevented classification, retrieval, and autonomous treatment generation for deterministic emergency matches;
+- recorded an in-memory JSON-friendly request trace;
+- showed selected action, risk, rewritten query, sources, and trace in Streamlit;
+- added focused normal-route and high-risk-route tests.
 
-These items are intentionally documented as planned. The current application always follows the RAG path and does not yet implement the controlled high-risk escalation workflow.
+Deferred deliberately: a larger shared-service refactor of the terminal and UI paths. It is not required for the interview vertical slice and would enlarge the diff without improving the demonstrated safety decision.
+
+### 2026-08-13 — Lightweight agentic orchestration added
+
+Reason:
+
+- The interview story needed to demonstrate controlled action selection around—not instead of—the existing RAG pipeline.
+- Clear emergencies needed deterministic handling and a visible explanation of why normal generation was skipped.
+
+Changes:
+
+- Added typed intent, risk, action, decision, and trace structures.
+- Added deterministic rules for severe chest pain, stroke-like symptoms, severe breathing difficulty, and anaphylaxis-like language.
+- Added `search_medical_knowledge` as the controlled wrapper around existing classification, rewrite, FAISS/MMR, generation, and citation behavior.
+- Added `escalate_high_risk_request` with a fixed emergency response and no retrieval or treatment recommendation.
+- Added visible selected action, risk, rewritten query, and Agent Trace to Streamlit.
+- Added deterministic tests proving the escalation path does not call the classifier or RAG tool.
 
 ## Known limitations at this revision
 

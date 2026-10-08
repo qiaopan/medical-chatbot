@@ -12,6 +12,15 @@ from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_community.vectorstores import FAISS
 from langchain_groq import ChatGroq
 
+from optimal.agent_orchestrator import (
+    Action,
+    append_trace,
+    escalate_high_risk_request,
+    new_trace,
+    record_decision,
+    route_request,
+)
+
 load_dotenv()
 
 DB_FAISS_PATH = "vectorstore/db_faiss"
@@ -95,19 +104,18 @@ def get_llm():
     )
 
 
-def classify_and_anonymize_user_query(user_query: str) -> Tuple[str, Dict[str, Any]]:
-    """
-    1. Anonymise incremental user input.
-    2. Call classify_text_to_json.py methods.
-    3. Return redacted query and classification labels for prompt optimization.
-    """
+def anonymize_user_query(user_query: str):
     classifier = _import_classifier_module()
-
-    # Prefer the anonymizer from classify_text_to_json.py if it exists.
     if hasattr(classifier, "anonymize_text"):
         redacted_query, redactions = classifier.anonymize_text(user_query)
     else:
         redacted_query, redactions = user_query, []
+    return classifier, redacted_query, redactions
+
+
+def classify_redacted_query(
+    classifier, redacted_query: str, redactions: List[Dict[str, Any]]
+) -> Dict[str, Any]:
 
     try:
         client = classifier.create_groq_client()
@@ -141,6 +149,13 @@ def classify_and_anonymize_user_query(user_query: str) -> Tuple[str, Dict[str, A
         }
     )
 
+    return classification
+
+
+def classify_and_anonymize_user_query(user_query: str) -> Tuple[str, Dict[str, Any]]:
+    """Compatibility wrapper for the original preprocessing interface."""
+    classifier, redacted_query, redactions = anonymize_user_query(user_query)
+    classification = classify_redacted_query(classifier, redacted_query, redactions)
     return redacted_query, classification
 
 
@@ -499,6 +514,68 @@ Answer:
     return llm.invoke(answer_prompt).content.strip()
 
 
+def search_medical_knowledge(
+    redacted_query: str,
+    classification: Dict[str, Any],
+    trace,
+    llm=None,
+    vectorstore=None,
+) -> Dict[str, Any]:
+    """Controlled normal-information action that reuses the existing RAG path."""
+    llm = llm or get_llm()
+    vectorstore = vectorstore or get_vectorstore()
+    enhanced_query = build_classification_enhanced_query(redacted_query, classification)
+    rewritten_query = rewrite_query(llm, enhanced_query, classification)
+    append_trace(trace, "Query rewritten", rewritten_query)
+    docs = retrieve_documents(vectorstore, rewritten_query)
+    append_trace(trace, "Candidate chunks retrieved", "fetch_k=20")
+    append_trace(trace, "MMR selection completed", "k=6, lambda_mult=0.5")
+    append_trace(trace, "Chunks selected", str(len(docs)))
+    answer = generate_answer(llm, redacted_query, docs, classification)
+    append_trace(trace, "Grounded answer generated")
+    sources = format_source_documents(docs)
+    append_trace(trace, "Source citations attached", str(len(sources)))
+    append_trace(trace, "Request completed")
+    return {
+        "answer": answer,
+        "sources": sources,
+        "classification": classification,
+        "rewritten_query": rewritten_query,
+        "retrieval_count": len(docs),
+        "trace": [event.to_dict() for event in trace],
+    }
+
+
+def run_agentic_request(user_query: str, llm=None, vectorstore=None) -> Dict[str, Any]:
+    """Observe, decide, act, observe the result, and return a UI-ready response."""
+    trace = new_trace()
+    classifier, redacted_query, redactions = anonymize_user_query(user_query)
+    append_trace(trace, "PII processing completed", f"{len(redactions)} redaction(s)")
+
+    decision = route_request(redacted_query)
+    if decision.action == Action.ESCALATE_HIGH_RISK_REQUEST:
+        record_decision(trace, decision)
+        return escalate_high_risk_request(decision, trace)
+
+    classification = classify_redacted_query(classifier, redacted_query, redactions)
+    decision = route_request(redacted_query, classification)
+    record_decision(trace, decision)
+    if decision.action == Action.ESCALATE_HIGH_RISK_REQUEST:
+        result = escalate_high_risk_request(decision, trace)
+        result["classification"] = classification
+        return result
+
+    result = search_medical_knowledge(
+        redacted_query,
+        classification,
+        trace,
+        llm=llm,
+        vectorstore=vectorstore,
+    )
+    result["decision"] = decision.to_dict()
+    return result
+
+
 def show_classification(classification: Dict[str, Any]):
     st.markdown("**Classification labels**")
     st.json(
@@ -517,8 +594,22 @@ def show_classification(classification: Dict[str, Any]):
     )
 
 
+def show_agent_details(result: Dict[str, Any]):
+    decision = result.get("decision", {})
+    st.markdown(
+        f"**Selected action:** `{decision.get('action', 'unknown')}`  \n"
+        f"**Risk:** `{decision.get('risk', 'unknown')}`"
+    )
+    if result.get("rewritten_query"):
+        st.caption(f"Rewritten query: {result['rewritten_query']}")
+    with st.expander("Agent Trace"):
+        for event in result.get("trace", []):
+            detail = f": {event['detail']}" if event.get("detail") else ""
+            st.write(f"• {event['step']}{detail}")
+
+
 def main():
-    st.title("Ask Chatbot!")
+    st.title("Agentic Medical RAG — Controlled Healthcare Assistant")
 
     with st.sidebar:
         st.markdown("### RAG Settings")
@@ -535,6 +626,8 @@ def main():
         with st.chat_message(message["role"]):
             st.markdown(message["content"])
             show_sources(message.get("sources"))
+            if message.get("decision"):
+                show_agent_details(message)
             if message.get("classification"):
                 with st.expander("Classification labels"):
                     show_classification(message["classification"])
@@ -546,30 +639,17 @@ def main():
         st.session_state.messages.append({"role": "user", "content": prompt})
 
         try:
-            vectorstore = get_vectorstore()
-            llm = get_llm()
-
-            redacted_query, classification = classify_and_anonymize_user_query(prompt)
-            enhanced_query = build_classification_enhanced_query(redacted_query, classification)
-            rewritten_query = rewrite_query(llm, enhanced_query, classification)
-            docs = retrieve_documents(vectorstore, rewritten_query)
-            result = generate_answer(llm, redacted_query, docs, classification)
-            sources = format_source_documents(docs)
+            response = run_agentic_request(prompt)
 
             with st.chat_message("assistant"):
-                st.markdown(result)
-                show_sources(sources)
-                with st.expander("Classification labels"):
-                    show_classification(classification)
+                st.markdown(response["answer"])
+                show_sources(response.get("sources"))
+                show_agent_details(response)
+                if response.get("classification"):
+                    with st.expander("Classification labels"):
+                        show_classification(response["classification"])
 
-            st.session_state.messages.append(
-                {
-                    "role": "assistant",
-                    "content": result,
-                    "classification": classification,
-                    "sources": sources,
-                }
-            )
+            st.session_state.messages.append({"role": "assistant", "content": response.pop("answer"), **response})
 
         except Exception as e:
             st.error(f"Error: {str(e)}")
